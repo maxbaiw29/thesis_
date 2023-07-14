@@ -1,174 +1,65 @@
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from codecarbon import EmissionsTracker
+from tracarbon import MetricGenerator, HardwareInfo
+from tracarbon.exporters import Metric, Tag, JSONExporter
 
-from datetime import datetime
-from enum import Enum
-from typing import Any, Optional
+# Load the MNIST dataset
+(x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
 
-from loguru import logger
-from pydantic import BaseModel
+# Preprocess the data
+x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+x_test = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+y_train = keras.utils.to_categorical(y_train)
+y_test = keras.utils.to_categorical(y_test)
 
-from tracarbon.hardwares import EnergyConsumption, Power, Sensor
-from tracarbon.hardwares.energy import EnergyUsage, EnergyUsageUnit, UsageType
-from tracarbon.locations import Country, Location
+# Define the model
+inputs = keras.Input(shape=(28, 28, 1))
+x = layers.Conv2D(16, kernel_size=(3, 3), activation='relu', padding='same')(inputs)
 
-
-class CarbonUsageUnit(Enum):
-    """
-    Carbon usage unit.
-    """
-
-    CO2_G_KWH = "co2g/kwh"
-    CO2_MG_KWH = "co2mg/kwh"
-
-
-class CarbonUsage(BaseModel):
-    """
-    Carbon Usage of the different types.
-    """
-
-    host_carbon_usage: float = 0.0
-    cpu_carbon_usage: Optional[float] = None
-    memory_carbon_usage: Optional[float] = None
-    gpu_carbon_usage: Optional[float] = None
-    unit: CarbonUsageUnit = CarbonUsageUnit.CO2_G_KWH
-
-    def get_carbon_usage_on_type(self, usage_type: UsageType) -> Optional[float]:
-        """
-        Get the carbon usage based on the type.
-
-        :param: usage_type: the type of energy to return
-        :return: the carbon of the type
-        """
-        if usage_type == UsageType.CPU:
-            return self.cpu_carbon_usage
-        elif usage_type == UsageType.GPU:
-            return self.gpu_carbon_usage
-        elif usage_type == UsageType.HOST:
-            return self.host_carbon_usage
-        elif usage_type == UsageType.MEMORY:
-            return self.memory_carbon_usage
-        return None
-
-    def convert_unit(self, unit: CarbonUsageUnit) -> None:
-        """
-        Convert the carbon usage with the right carbon usage type.
-
-        :param: unit: the carbon usage unit for the conversion
-        """
-        if self.unit != unit:
-            if (
-                unit == CarbonUsageUnit.CO2_G_KWH
-                and self.unit == CarbonUsageUnit.CO2_MG_KWH
-            ):
-                self.host_carbon_usage = self.host_carbon_usage / 1000
-                self.cpu_carbon_usage = (
-                    self.cpu_carbon_usage / 1000 if self.cpu_carbon_usage else None
-                )
-                self.memory_carbon_usage = (
-                    self.memory_carbon_usage / 1000
-                    if self.memory_carbon_usage
-                    else None
-                )
-                self.gpu_carbon_usage = (
-                    self.gpu_carbon_usage / 1000 if self.gpu_carbon_usage else None
-                )
-                self.unit = CarbonUsageUnit.CO2_G_KWH
-            elif (
-                unit == CarbonUsageUnit.CO2_MG_KWH
-                and self.unit == CarbonUsageUnit.CO2_G_KWH
-            ):
-                self.host_carbon_usage = self.host_carbon_usage * 1000
-                self.cpu_carbon_usage = (
-                    self.cpu_carbon_usage * 1000 if self.cpu_carbon_usage else None
-                )
-                self.memory_carbon_usage = (
-                    self.memory_carbon_usage * 1000
-                    if self.memory_carbon_usage
-                    else None
-                )
-                self.gpu_carbon_usage = (
-                    self.gpu_carbon_usage * 1000 if self.gpu_carbon_usage else None
-                )
-                self.unit = CarbonUsageUnit.CO2_MG_KWH
+# Convolutional block 1
+activation = 'relu'
+shortcut = x
+x = layers.Conv2D(filters=32, kernel_size=3, strides=1, padding='same')(x)
+x = layers.Activation(activation)(x)
+shortcut = layers.Conv2D(filters=32, kernel_size=3, strides=1, padding='same')(shortcut)# Adjusted shortcut
+x = layers.add([x, shortcut])
+x = layers.Activation(activation)(x)
 
 
-class CarbonEmission(Sensor):
-    """
-    Carbon Metric sensor in watts per second to calculate the CO2g/kwh emitted.
-    """
+# Convolutional block 2
+shortcut = x
+x = layers.Conv2D(filters=64, kernel_size=3, strides=1, padding='same')(x)
+x = layers.Activation(activation)(x)
+shortcut = layers.Conv2D(filters=64, kernel_size=3, strides=1, padding='same')(shortcut)# Adjusted shortcut
+x = layers.add([x, shortcut])
+x = layers.Activation(activation)(x)
 
-    location: Location
-    energy_consumption: EnergyConsumption
-    previous_energy_consumption_time: Optional[datetime] = None
+# Convolutional block 3
+shortcut = x
+x = layers.Conv2D(filters=156, kernel_size=3, strides=1, padding='same')(x)
+x = layers.Activation(activation)(x)
+shortcut = layers.Conv2D(filters=156, kernel_size=3, strides=1, padding='same')(shortcut)# Adjusted shortcut
+x = layers.add([x, shortcut])
+x = layers.Activation(activation)(x)
 
-    def __init__(self, **data: Any) -> None:
-        if "location" not in data:
-            data["location"] = Country.get_location()
 
-        if "energy_consumption" not in data:
-            data["energy_consumption"] = EnergyConsumption.from_platform()
+# Global Average Pooling
+x = layers.GlobalAveragePooling2D()(x)
 
-        super().__init__(**data)
+# Fully-connected layer
+x = layers.Dense(256, activation='relu')(x)
 
-    async def get_energy_usage(self) -> EnergyUsage:
-        """
-        Generate energy usage.
+# Softmax activation
+outputs = layers.Dense(10, activation='softmax')(x)
 
-        :return: the generated energy usage.
-        """
-        return await self.energy_consumption.get_energy_usage()
+# Create the model
+model = keras.Model(inputs=inputs, outputs=outputs)
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
-    async def get_co2_usage(self) -> CarbonUsage:
-        """
-        Run the Carbon Emission sensor and get the carbon emission generated.
-
-        :return: the carbon usage.
-        """
-        energy_usage = await self.get_energy_usage()
-        logger.debug(f"Energy consumption run: {energy_usage}")
-
-        co2g_per_kwh = await self.location.get_latest_co2g_kwh()
-        logger.debug(f"Carbon Emission of the location: {co2g_per_kwh}g CO2 eq/kWh")
-        energy_usage.convert_unit(unit=EnergyUsageUnit.WATT)
-        host_carbon_usage = Power.co2g_from_watts_hour(
-            Power.watts_to_watt_hours(
-                watts=energy_usage.host_energy_usage,
-                previous_energy_measurement_time=self.previous_energy_consumption_time,
-            ),
-            co2g_per_kwh=co2g_per_kwh,
-        )
-        cpu_carbon_usage = 0.0
-        memory_carbon_usage = 0.0
-        gpu_carbon_usage = 0.0
-        if energy_usage.cpu_energy_usage:
-            cpu_carbon_usage = Power.co2g_from_watts_hour(
-                Power.watts_to_watt_hours(
-                    watts=energy_usage.cpu_energy_usage,
-                    previous_energy_measurement_time=self.previous_energy_consumption_time,
-                ),
-                co2g_per_kwh=co2g_per_kwh,
-            )
-        if energy_usage.memory_energy_usage:
-            memory_carbon_usage = Power.co2g_from_watts_hour(
-                Power.watts_to_watt_hours(
-                    watts=energy_usage.memory_energy_usage,
-                    previous_energy_measurement_time=self.previous_energy_consumption_time,
-                ),
-                co2g_per_kwh=co2g_per_kwh,
-            )
-        if energy_usage.gpu_energy_usage:
-            gpu_carbon_usage = Power.co2g_from_watts_hour(
-                Power.watts_to_watt_hours(
-                    watts=energy_usage.gpu_energy_usage,
-                    previous_energy_measurement_time=self.previous_energy_consumption_time,
-                ),
-                co2g_per_kwh=co2g_per_kwh,
-            )
-        self.previous_energy_consumption_time = datetime.now()
-        return CarbonUsage(
-            host_carbon_usage=host_carbon_usage,
-            cpu_carbon_usage=cpu_carbon_usage if cpu_carbon_usage > 0 else None,
-            memory_carbon_usage=memory_carbon_usage
-            if memory_carbon_usage > 0
-            else None,
-            gpu_carbon_usage=gpu_carbon_usage if gpu_carbon_usage > 0 else None,
-        )
+configuration = TracarbonConfiguration(co2signal_api_key="UALiba5FEs7d2negQ7CEVrEHeHjwpkLz", env_file_path="/Users/maxbaiwir/These- Final version algorithm/untitled.json")  # Your configuration
+tracarbon = TracarbonBuilder(configuration=configuration).build()
+tracarbon.start()
+model.fit(x_train, y_train, batch_size=128, epochs=1, validation_data=(x_test, y_test))
+tracarbon.stop()
